@@ -6,13 +6,16 @@ Paste an ingredient list → get a per-serving nutrition label, using USDA FoodD
 
 ```bash
 npm install
-cp .env.example .env.local     # then put your USDA key in it
+echo "USDA_API_KEY=your-key-here" > .env.local
 npm run dev                    # http://localhost:3000
-npm test                       # 60 unit tests, no network needed
+npm test                       # unit tests, no network needed
 ```
 
 Get a free key at https://fdc.nal.usda.gov/api-key-signup (1,000 requests/hour).
 `DEMO_KEY` works for a quick look but is heavily rate-limited.
+
+**On Vercel:** add `USDA_API_KEY` under Project Settings → Environment Variables, then
+redeploy (new variables only apply to new deployments).
 
 ## How it works
 
@@ -41,7 +44,11 @@ text ─▶ parse.ts ─▶ match.ts ─▶ fdc.ts (USDA) ─▶ portions.ts ─
 - **matched**: confident match with a USDA weight. Counted.
 - **estimated**: counted, but the grams came from a fallback (assumed density, typical egg/can size). Marked `*`.
 - **needs_review**: not counted. No quantity, no match, low-confidence match, or no way to convert to grams.
-- **excluded**: "to taste", "for frying", etc.
+- **excluded**: "to taste", "for frying", salt/pepper with no amount, and a recipe title
+  pasted above the ingredients. Anything after an "Instructions"/"Directions"/"Method"
+  line is ignored.
+- **removed**: any line can be removed (and restored) in the UI; totals update instantly
+  without new USDA calls.
 
 Missing USDA nutrient values are tracked as *unknown*, and totals show `+` when incomplete,
 so a missing fiber value doesn't silently read as 0 g.

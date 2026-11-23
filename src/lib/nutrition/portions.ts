@@ -73,7 +73,7 @@ const DENSITY_FALLBACKS: [RegExp, number, string][] = [
 ];
 
 /** Per-item weights for when USDA has no count portion. */
-const COUNT_FALLBACKS: [RegExp, Partial<Record<SizeWord | "default", number>>, string][] = [
+const COUNT_FALLBACKS: [RegExp, Partial<Record<SizeWord | "default" | "cooked", number>>, string][] = [
   [/\begg\b|\beggs\b/, { small: 38, medium: 44, large: 50, "extra large": 56, jumbo: 63, default: 50 }, "egg"],
   [/\bgarlic\b/, { default: 3 }, "garlic clove"],
   [/\bonions?\b/, { small: 70, medium: 110, large: 150, default: 110 }, "onion"],
@@ -85,7 +85,11 @@ const COUNT_FALLBACKS: [RegExp, Partial<Record<SizeWord | "default", number>>, s
   [/\bcarrots?\b/, { small: 50, medium: 61, large: 72, default: 61 }, "carrot"],
   [/\bpotato(es)?\b/, { small: 170, medium: 213, large: 369, default: 213 }, "potato"],
   [/\bbread\b/, { default: 28 }, "slice of bread"],
+  [/\bbacon\b/, { default: 28, cooked: 8 }, "slice of bacon"],
 ];
+
+/** Cooked items weigh much less than raw: a raw bacon slice ≈ 28 g, cooked ≈ 8 g. */
+const COOKED_RE = /\b(cooked|crisp|crispy|crumbled|fried)\b/i;
 
 /** Typical can if the recipe doesn't say: 15 oz. */
 const DEFAULT_CAN_GRAMS = 425;
@@ -112,7 +116,10 @@ function densityFromPortions(portions: NormalizedPortion[], line: ParsedLine) {
 }
 
 function countPortion(portions: NormalizedPortion[], line: ParsedLine): NormalizedPortion | null {
-  const countLike = portions.filter((p) => !p.unit || unitKind(p.unit) === "count");
+  // With no unit ("1 onion") only whole-item portions apply — not "slice, medium" or "clove".
+  const countLike = portions.filter((p) =>
+    line.unit ? !p.unit || unitKind(p.unit) === "count" : !p.unit && !/\b(slice|ring|piece|chopped|sliced|diced)\b/.test(p.text),
+  );
   if (!countLike.length) return null;
   // 1. exact unit match ("clove", "slice", "stick")
   if (line.unit) {
@@ -216,12 +223,13 @@ export function resolveGrams(line: ParsedLine, food: FdcFood): GramsResult | nul
     const name = `${line.name} ${line.unit ?? ""}`.toLowerCase();
     const fb = COUNT_FALLBACKS.find(([re]) => re.test(name));
     if (fb) {
-      const per = (line.size && fb[1][line.size]) || fb[1].default!;
+      const cooked = fb[1].cooked !== undefined && COOKED_RE.test([line.name, ...line.notes, food.description].join(" "));
+      const per = cooked ? fb[1].cooked! : (line.size && fb[1][line.size]) || fb[1].default!;
       return {
         grams: q * per,
         method: "count-fallback",
         estimated: true,
-        detail: `${q} × ~${per} g (typical ${line.size ? line.size + " " : ""}${fb[2]})`,
+        detail: `${q} × ~${per} g (typical ${cooked ? "cooked " : line.size ? line.size + " " : ""}${fb[2]})`,
       };
     }
   }

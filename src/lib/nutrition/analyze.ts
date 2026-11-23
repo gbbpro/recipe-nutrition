@@ -1,5 +1,5 @@
 import { FALLBACK_DATA_TYPES, MIN_CONFIDENT_SCORE, PRIMARY_DATA_TYPES, planSearch, rankCandidates, summarize } from "./match";
-import { divideTotals, per100g, scaleNutrients, sumNutrients } from "./nutrients";
+import { per100g, scaleNutrients, totalsForLines } from "./nutrients";
 import { parseRecipe } from "./parse";
 import { resolveGrams } from "./portions";
 import type { FdcClient, FdcSearchFood, LineResult, ParsedLine, RecipeAnalysis } from "./types";
@@ -118,14 +118,5 @@ export async function analyzeRecipe(text: string, opts: AnalyzeOptions): Promise
     analyzeLine(line, opts.client, opts.overrides?.[line.index]),
   );
 
-  const counted = lines.filter((l) => (l.status === "matched" || l.status === "estimated") && l.nutrients);
-  const totals = sumNutrients(counted.map((l) => l.nutrients!));
-
-  return {
-    servings,
-    lines,
-    totals,
-    perServing: divideTotals(totals, servings),
-    uncountedLines: lines.filter((l) => l.status === "needs_review").length,
-  };
+  return { servings, lines, ...totalsForLines(lines, servings) };
 }

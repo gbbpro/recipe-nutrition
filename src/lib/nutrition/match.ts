@@ -216,6 +216,27 @@ export const INGREDIENT_ALIASES: Record<
   "chicken thigh": {
     query: "Chicken, broilers or fryers, thigh, meat only, raw",
   },
+  "boneless chicken thigh": {
+    query: "Chicken, broilers or fryers, thigh, meat only, raw",
+  },
+  "skinless chicken thigh": {
+    query: "Chicken, broilers or fryers, thigh, meat only, raw",
+  },
+  "boneless skinless chicken thigh": {
+    query: "Chicken, broilers or fryers, thigh, meat only, raw",
+  },
+  "skinless boneless chicken thigh": {
+    query: "Chicken, broilers or fryers, thigh, meat only, raw",
+  },
+  bacon: { query: "Pork, cured, bacon, unprepared" },
+  "cooked bacon": { query: "Pork, cured, bacon, cooked" },
+  "white wine": { query: "Alcoholic beverage, wine, table, white" },
+  "dry white wine": { query: "Alcoholic beverage, wine, table, white" },
+  "red wine": { query: "Alcoholic beverage, wine, table, red" },
+  "dry red wine": { query: "Alcoholic beverage, wine, table, red" },
+  paprika: { query: "Spices, paprika" },
+  "smoked paprika": { query: "Spices, paprika" },
+  parsley: { query: "Parsley, fresh" },
   "ground beef": { query: "Beef, ground, 80% lean meat / 20% fat, raw" },
   "chicken broth": { query: "Soup, chicken broth, ready-to-serve" },
   "black bean": { query: "Beans, black, mature seeds, canned, low sodium" },
@@ -269,11 +290,19 @@ export interface SearchPlan {
 
 export function planSearch(line: ParsedLine): SearchPlan {
   const key = cleanIngredientName(line.name);
-  const alias = INGREDIENT_ALIASES[key];
   // Keep nutrition-relevant notes ("drained", "cooked") in the query.
   const stateNotes = line.notes
     .flatMap((n) => n.toLowerCase().split(/\s+/))
     .filter((w) => STATE_WORDS.includes(w));
+  // Prefer a state-specific alias over the plain one:
+  //   "bacon, cooked" → "cooked bacon"; "1 can diced tomatoes" → "canned tomato".
+  const isCooked = /\b(cooked|crisp|crispy|crumbled|fried)\b/i.test(line.notes.join(" "));
+  const isCanned = line.unit === "can" || /\bcanned\b/i.test(line.name);
+  if (isCanned && !stateNotes.includes("canned")) stateNotes.push("canned");
+  const alias =
+    (isCooked ? INGREDIENT_ALIASES[`cooked ${key}`] : undefined) ??
+    (isCanned ? INGREDIENT_ALIASES[`canned ${key.replace(/^canned\s+/, "")}`] : undefined) ??
+    INGREDIENT_ALIASES[key];
   return {
     key,
     query: alias?.query ?? [key, ...stateNotes].join(" "),
@@ -329,7 +358,7 @@ export function scoreCandidate(
   const wantsCooked =
     /\b(cooked|boiled|roasted|fried|baked|grilled|steamed|canned|drained)\b/.test(
       lineText,
-    );
+    ) || line.unit === "can";
   if (!wantsCooked && descTokens.includes("raw")) score += 0.1;
   if (
     wantsCooked &&
