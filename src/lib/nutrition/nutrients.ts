@@ -1,4 +1,4 @@
-import type { FdcFood, NutrientKey, NutrientTotals, NutrientValues } from "./types";
+import type { FdcFood, LineResult, NutrientKey, NutrientTotals, NutrientValues, RecipeAnalysis } from "./types";
 
 /**
  * USDA nutrient ids, in priority order. Foundation foods often lack the SR Legacy id,
@@ -92,4 +92,23 @@ export function divideTotals(totals: NutrientTotals, servings: number): Nutrient
     out[key] = { value: totals[key].value / servings, incomplete: totals[key].incomplete };
   }
   return out;
+}
+
+/**
+ * Totals for a set of analyzed lines. Client-safe, so the UI can recompute instantly
+ * when the user removes a line, without another USDA round trip.
+ */
+export function totalsForLines(
+  lines: LineResult[],
+  servings: number,
+  removed: ReadonlySet<number> = new Set(),
+): Pick<RecipeAnalysis, "totals" | "perServing" | "uncountedLines"> {
+  const active = lines.filter((l) => !removed.has(l.line.index));
+  const counted = active.filter((l) => (l.status === "matched" || l.status === "estimated") && l.nutrients);
+  const totals = sumNutrients(counted.map((l) => l.nutrients!));
+  return {
+    totals,
+    perServing: divideTotals(totals, servings),
+    uncountedLines: active.filter((l) => l.status === "needs_review").length,
+  };
 }

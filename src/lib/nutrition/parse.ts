@@ -26,6 +26,39 @@ const TRAILING_PHRASE_RE =
 const PAREN_MEASURE_RE =
   /^(?:about\s+|approx\.?\s+)?(\d+(?:\.\d+)?)\s*-?\s*(fl\.?\s*oz|fluid ounces?|oz|ounces?|g|grams?|kg|lbs?|pounds?|ml|milliliters?|l|liters?)\.?\b/i;
 
+/** Words that describe an ingredient and only make sense joined to the next segment. */
+const DESCRIPTORS = new Set([
+  "boneless", "skinless", "bone-in", "skin-on", "fresh", "frozen", "thawed", "ripe",
+  "lean", "extra-lean", "extra-virgin", "extra", "virgin", "large", "medium", "small",
+  "whole", "raw", "cooked", "unsalted", "salted", "low-sodium", "reduced-sodium",
+  "organic", "plain", "sweetened", "unsweetened", "light", "dark", "hot", "mild",
+]);
+
+function isDescriptorOnly(segment: string): boolean {
+  const words = segment.toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => DESCRIPTORS.has(w) || w === "and");
+}
+
+const SEASONING_RE =
+  /^(?:(?:kosher|sea|table|flaky|coarse|fine)\s+)?(?:salt|(?:freshly\s+)?(?:ground\s+|cracked\s+)?(?:black\s+|white\s+)?pepper)\b/i;
+
+/** Section words on their own line. Sections after these aren't ingredients. */
+const SECTION_RE =
+  /^(?:#+\s*)?(ingredients?|instructions?|directions?|method|steps|preparation|notes?|equipment|nutrition(?: facts)?)\s*:?\s*$/i;
+const STOP_SECTION_RE = /^(instructions?|directions?|method|steps|preparation|notes?|equipment|nutrition)/i;
+
+/**
+ * A recipe title pasted above the ingredients: "30 Minute Chicken Paprikash".
+ * Only applied before the first real ingredient line.
+ */
+export function looksLikeTitle(line: ParsedLine): boolean {
+  if (line.unit || line.packageSize || line.size || /[,(]/.test(line.raw)) return false;
+  const words = line.raw.trim().split(/\s+/).filter((w) => /[a-z]/i.test(w));
+  if (words.length < 2) return false;
+  const capitalized = words.filter((w) => /^[A-Z]/.test(w)).length;
+  return capitalized / words.length >= 0.75;
+}
+
 /** Clean up list markers, number words, and patterns parse-ingredient misses. */
 export function preprocessLine(input: string): { text: string; extraNotes: string[] } {
   const extraNotes: string[] = [];
@@ -190,10 +223,14 @@ export function parseLine(raw: string, index: number, group: string | null = nul
     description = description.replace(TRAILING_PHRASE_RE, "").trim();
   }
 
-  // Name vs. prep notes: "onion, finely chopped"
-  const comma = description.indexOf(",");
-  let name = comma >= 0 ? description.slice(0, comma) : description;
-  if (comma >= 0) notes.push(...splitNotes(description.slice(comma + 1)));
+  // Name vs. prep notes: "onion, finely chopped". Leading segments that are only
+  // descriptors belong to the name: "boneless, skinless chicken thighs".
+  const segments = description.split(",").map((s) => s.trim());
+  let name = segments.shift() ?? "";
+  while (segments.length && isDescriptorOnly(name)) {
+    name = `${name} ${segments.shift()}`.trim();
+  }
+  if (segments.length) notes.push(...splitNotes(segments.join(",")));
 
   // Alternatives: "butter or margarine", "butter/margarine"
   const alts = name.split(/\s+or\s+|\s*\/\s*/i).map((s) => s.trim()).filter(Boolean);
@@ -209,8 +246,22 @@ export function parseLine(raw: string, index: number, group: string | null = nul
   const optional = notes.some((n) => /\boptional\b/i.test(n)) || /\boptional\b/i.test(raw);
   if (/\boptional\b/i.test(name)) name = name.replace(/\s*\boptional\b\s*/i, " ").trim();
 
+  // Count unit after the name: "4 garlic cloves" → 4 clove garlic.
+  if (!unit) {
+    const m = name.match(/^(.*\S)\s+(cloves?|slices?|stalks?|sprigs?|fillets?)$/i);
+    if (m) {
+      unit = normalizeUnitWord(m[2]);
+      name = m[1];
+    }
+  }
+
   // "8 oz milk" is fluid ounces; "8 oz cheese" is weight.
   if (unit === "ounce" && looksLiquid(name)) unit = "fluid ounce";
+
+  // "Salt and ground black pepper" with no amount is seasoning to taste.
+  if (quantity === null && !excludedReason && SEASONING_RE.test(name) && !/\b(bell|chil[ei]|jalape)/i.test(name)) {
+    excludedReason = "seasoning, no amount";
+  }
 
   const cleanNotes = notes.map((n) => n.trim()).filter((n) => n && !/^optional$/i.test(n));
 
@@ -246,6 +297,8 @@ export function parseRecipe(text: string): ParsedRecipe {
   let group: string | null = null;
   const lines: ParsedLine[] = [];
 
+  let seenIngredient = false;
+
   for (const raw of text.split(/\r?\n/)) {
     if (!raw.trim()) continue;
     const y = parseYield(raw);
@@ -253,10 +306,30 @@ export function parseRecipe(text: string): ParsedRecipe {
       servings ??= y;
       continue;
     }
+
+    const section = raw.trim().match(SECTION_RE);
+    if (section) {
+      const word = section[1];
+      const stop = STOP_SECTION_RE.test(word);
+      lines.push({
+        ...parseLine("x", lines.length, group),
+        raw,
+        kind: "header",
+        name: stop ? `${word} (not analyzed)` : word,
+      });
+      if (stop) break; // everything after "Instructions" is method text
+      continue;
+    }
+
     const line = parseLine(raw, lines.length, group);
     if (line.kind === "header") {
       group = line.name.replace(/^for\s+(the\s+)?/i, "").trim() || line.name;
       line.group = group;
+    } else if (!seenIngredient && looksLikeTitle(line)) {
+      line.kind = "excluded";
+      line.excludedReason = "looks like a title";
+    } else if (line.kind === "ingredient") {
+      seenIngredient = true;
     }
     lines.push(line);
   }

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { NUTRIENT_META } from "@/lib/nutrition/nutrients";
+import { useMemo, useState } from "react";
+import { NUTRIENT_META, totalsForLines } from "@/lib/nutrition/nutrients";
 import type { FoodMatchSummary, LineResult, LineStatus, NutrientKey, RecipeAnalysis } from "@/lib/nutrition/types";
 
 const SAMPLE = `Serves 8
@@ -40,6 +40,8 @@ const STATUS_STYLE: Record<LineStatus, { label: string; className: string }> = {
   header: { label: "", className: "" },
 };
 
+const REMOVED_STYLE = { label: "Removed", className: "bg-stone-100 text-stone-500" };
+
 function fmt(n: number, unit: string) {
   const v = unit === "kcal" || unit === "mg" ? Math.round(n) : Math.round(n * 10) / 10;
   return `${v}${unit === "kcal" ? "" : " " + unit}`;
@@ -65,6 +67,23 @@ export default function Home() {
   const [result, setResult] = useState<RecipeAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  /** Line indexes the user removed from the analysis. */
+  const [removed, setRemoved] = useState<Set<number>>(new Set());
+
+  // Recompute totals locally when lines are removed — no extra USDA calls.
+  const view = useMemo(
+    () => (result ? { ...result, ...totalsForLines(result.lines, result.servings, removed) } : null),
+    [result, removed],
+  );
+
+  function toggleRemoved(lineIndex: number) {
+    setRemoved((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineIndex)) next.delete(lineIndex);
+      else next.add(lineIndex);
+      return next;
+    });
+  }
 
   async function analyze(nextOverrides = overrides) {
     setLoading(true);
@@ -111,6 +130,7 @@ export default function Home() {
             onChange={(e) => {
               setText(e.target.value);
               setOverrides({}); // line indexes may shift
+              setRemoved(new Set());
             }}
             rows={12}
             spellCheck={false}
@@ -139,16 +159,17 @@ export default function Home() {
           </div>
         </div>
 
-        {result && <NutritionLabel result={result} />}
+        {view && <NutritionLabel result={view} />}
       </section>
 
-      {result && (
+      {view && (
         <section className="mt-10">
           <h2 className="mb-3 text-lg font-semibold">Ingredients</h2>
-          {result.uncountedLines > 0 && (
+          {view.uncountedLines > 0 && (
             <p className="mb-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-800">
-              {result.uncountedLines} line{result.uncountedLines > 1 ? "s" : ""} need review and{" "}
-              {result.uncountedLines > 1 ? "are" : "is"} not in the totals.
+              {view.uncountedLines} line{view.uncountedLines > 1 ? "s" : ""} need review and{" "}
+              {view.uncountedLines > 1 ? "are" : "is"} not in the totals. Fix the match, or remove
+              the line if it isn&apos;t an ingredient.
             </p>
           )}
           <div className="overflow-x-auto rounded-lg border border-stone-200 bg-white">
@@ -161,11 +182,18 @@ export default function Home() {
                   <th className="px-3 py-2">USDA match</th>
                   <th className="px-3 py-2 text-right">Grams</th>
                   <th className="px-3 py-2 text-right">kcal</th>
+                  <th className="px-3 py-2"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
-                {result.lines.map((r) => (
-                  <Row key={r.line.index} r={r} onChoose={chooseFood} />
+                {view.lines.map((r) => (
+                  <Row
+                    key={r.line.index}
+                    r={r}
+                    removed={removed.has(r.line.index)}
+                    onToggleRemoved={toggleRemoved}
+                    onChoose={chooseFood}
+                  />
                 ))}
               </tbody>
             </table>
@@ -176,23 +204,34 @@ export default function Home() {
   );
 }
 
-function Row({ r, onChoose }: { r: LineResult; onChoose: (i: number, id: number) => void }) {
+function Row({
+  r,
+  removed,
+  onToggleRemoved,
+  onChoose,
+}: {
+  r: LineResult;
+  removed: boolean;
+  onToggleRemoved: (i: number) => void;
+  onChoose: (i: number, id: number) => void;
+}) {
   if (r.status === "header") {
     return (
       <tr className="border-t border-stone-200 bg-stone-50">
-        <td colSpan={6} className="px-3 py-2 font-medium">{r.line.name}</td>
+        <td colSpan={7} className="px-3 py-2 font-medium">{r.line.name}</td>
       </tr>
     );
   }
-  const s = STATUS_STYLE[r.status];
+  const s = removed ? REMOVED_STYLE : STATUS_STYLE[r.status];
+  const canRemove = r.status !== "excluded";
   return (
-    <tr className="border-t border-stone-100 align-top">
+    <tr className={`border-t border-stone-100 align-top ${removed ? "text-stone-400" : ""}`}>
       <td className="px-3 py-2">
         <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${s.className}`}>{s.label}</span>
       </td>
       <td className="px-3 py-2">
-        <div>{r.line.raw}</div>
-        {r.message && <div className="mt-1 text-xs text-rose-700">{r.message}</div>}
+        <div className={removed ? "line-through" : ""}>{r.line.raw}</div>
+        {r.message && !removed && <div className="mt-1 text-xs text-rose-700">{r.message}</div>}
       </td>
       <td className="px-3 py-2 text-stone-600">
         {r.status !== "excluded" && (
@@ -213,6 +252,17 @@ function Row({ r, onChoose }: { r: LineResult; onChoose: (i: number, id: number)
       </td>
       <td className="px-3 py-2 text-right tabular-nums">
         {r.nutrients?.calories != null ? Math.round(r.nutrients.calories) : "—"}
+      </td>
+      <td className="px-3 py-2 text-right">
+        {canRemove && (
+          <button
+            onClick={() => onToggleRemoved(r.line.index)}
+            className="text-xs text-stone-500 underline hover:text-stone-800"
+            aria-label={`${removed ? "Restore" : "Remove"} ${r.line.raw}`}
+          >
+            {removed ? "Restore" : "Remove"}
+          </button>
+        )}
       </td>
     </tr>
   );
